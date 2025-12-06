@@ -6,25 +6,23 @@ Run with: pytest test_subprocess_multitee.py -v
 
 import io
 import os
+import subprocess as stdlib_subprocess
 import sys
 import tempfile
-import threading
-import time
-import subprocess as stdlib_subprocess
 
 import pytest
 
 import subprocess_multitee as sm
 from subprocess_multitee import (
-    tee,
+    DEVNULL,
+    PIPE,
+    STDOUT,
     Popen,
-    run,
     call,
     check_call,
     check_output,
-    PIPE,
-    STDOUT,
-    DEVNULL,
+    run,
+    tee,
 )
 
 
@@ -356,7 +354,10 @@ class TestEdgeCases:
 
     def test_binary_data(self):
         """Handle binary data correctly."""
-        proc = Popen(["printf", "\\x00\\x01\\x02\\xff"], stdout=tee(PIPE))
+        proc = Popen(
+            [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\x00\\x01\\x02\\xff')"],
+            stdout=tee(PIPE),
+        )
         output = proc.stdout.read()
         proc.wait()
         assert output == b"\x00\x01\x02\xff"

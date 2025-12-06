@@ -124,7 +124,7 @@ class _Tee:
                 raise TypeError(f"Unsupported destination type: {type(dest)}")
 
         self._thread = threading.Thread(
-            target=self._loop, daemon=True, name="subprocess_extra.tee"
+            target=self._loop, daemon=True, name="subprocess_multitee.tee"
         )
         self._thread.start()
 
