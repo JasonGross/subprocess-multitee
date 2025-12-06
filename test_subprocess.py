@@ -370,12 +370,19 @@ class TestEdgeCases:
         """All tee destinations receive the same data."""
         fname1 = tempfile.NamedTemporaryFile(delete=False).name
         fname2 = tempfile.NamedTemporaryFile(delete=False).name
+
         try:
-            proc = Popen(["echo", "multi"], stdout=tee(fname1, fname2, PIPE))
-            captured = proc.stdout.read()
-            proc.wait()
-            data1 = open(fname1, "rb").read()
-            data2 = open(fname2, "rb").read()
+            with open(fname1, "wb") as f1:
+                with open(fname2, "wb") as f2:
+                    proc = Popen(["echo", "multi"], stdout=tee(f1, f2, PIPE))
+                    captured = proc.stdout.read()
+                    proc.wait()
+
+            with open(fname1, "rb") as f1:
+                data1 = f1.read()
+            with open(fname2, "rb") as f2:
+                data2 = f2.read()
+
             assert captured == b"multi\n"
             assert data1 == b"multi\n"
             assert data2 == b"multi\n"
