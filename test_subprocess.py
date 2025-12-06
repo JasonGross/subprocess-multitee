@@ -355,7 +355,11 @@ class TestEdgeCases:
     def test_binary_data(self):
         """Handle binary data correctly."""
         proc = Popen(
-            [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\x00\\x01\\x02\\xff')"],
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.buffer.write(b'\\x00\\x01\\x02\\xff')",
+            ],
             stdout=tee(PIPE),
         )
         output = proc.stdout.read()
@@ -364,22 +368,14 @@ class TestEdgeCases:
 
     def test_multiple_tee_destinations_all_receive_data(self):
         """All tee destinations receive the same data."""
-        with (
-            tempfile.NamedTemporaryFile(delete=False) as f1,
-            tempfile.NamedTemporaryFile(delete=False) as f2,
-        ):
-            fname1, fname2 = f1.name, f2.name
-
+        fname1 = tempfile.NamedTemporaryFile(delete=False).name
+        fname2 = tempfile.NamedTemporaryFile(delete=False).name
         try:
-            with open(fname1, "wb") as f1, open(fname2, "wb") as f2:
-                proc = Popen(["echo", "multi"], stdout=tee(f1, f2, PIPE))
-                captured = proc.stdout.read()
-                proc.wait()
-
-            with open(fname1, "rb") as f1, open(fname2, "rb") as f2:
-                data1 = f1.read()
-                data2 = f2.read()
-
+            proc = Popen(["echo", "multi"], stdout=tee(fname1, fname2, PIPE))
+            captured = proc.stdout.read()
+            proc.wait()
+            data1 = open(fname1, "rb").read()
+            data2 = open(fname2, "rb").read()
             assert captured == b"multi\n"
             assert data1 == b"multi\n"
             assert data2 == b"multi\n"
