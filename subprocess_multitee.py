@@ -9,6 +9,7 @@ import os
 import queue
 import select
 import subprocess as _subprocess
+import sys
 import threading
 from subprocess import (
     DEVNULL,
@@ -92,7 +93,7 @@ def tee(*destinations: Any) -> "_Tee":
 class _Tee:
     """Internal class implementing the tee functionality."""
 
-    def __init__(self, *destinations: Any):
+    def __init__(self, *destinations: Any, read_chunk_size: int = _READ_CHUNK_SIZE):
         self._read_fd, self._write_fd = os.pipe()
 
         # Set inheritability: write fd should be inherited by child,
@@ -106,6 +107,7 @@ class _Tee:
         self._outputs: List[tuple] = []  # (kind, dest, owned)
         self._owned_fds: List[int] = []
         self.pipes: List[IO[bytes]] = []
+        self._read_chunk_size = read_chunk_size
 
         for dest in destinations:
             if dest == STDOUT:
@@ -154,23 +156,31 @@ class _Tee:
 
     def _reader_loop(self) -> None:
         """Read chunks from pipe and enqueue them as soon as available."""
-        os.set_blocking(self._read_fd, False)
         try:
-            while True:
-                # Wait for data to be available
-                select.select([self._read_fd], [], [])
-
-                # Drain all currently available data
+            if sys.platform != "win32":
+                os.set_blocking(self._read_fd, False)
                 while True:
-                    try:
-                        data = os.read(self._read_fd, _READ_CHUNK_SIZE)
-                        if not data:
-                            return  # EOF
-                        self._queue.put(data)
-                    except OSError as e:
-                        if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
-                            break  # No more data right now, back to select
-                        raise
+                    # Wait for data to be available
+                    select.select([self._read_fd], [], [])
+
+                    # Drain all currently available data
+                    while True:
+                        try:
+                            data = os.read(self._read_fd, self._read_chunk_size)
+                            if not data:
+                                return  # EOF
+                            self._queue.put(data)
+                        except OSError as e:
+                            if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                                break  # No more data right now, back to select
+                            raise
+            else:
+                # Windows: select() doesn't work on pipes, use blocking reads
+                while True:
+                    data = os.read(self._read_fd, self._read_chunk_size)
+                    if not data:
+                        return
+                    self._queue.put(data)
         finally:
             self._queue.put(None)  # EOF sentinel
             os.close(self._read_fd)
