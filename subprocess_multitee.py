@@ -55,7 +55,7 @@ __all__ = [
 _READ_CHUNK_SIZE = 65536  # 64KB - matches typical pipe buffer size
 
 
-def tee(*destinations: Any) -> "_Tee":
+def tee(*destinations: Any, read_chunk_size: int | None = None) -> "_Tee":
     """
     Create a tee object that can be passed to subprocess.Popen as stdout/stderr.
 
@@ -87,13 +87,15 @@ def tee(*destinations: Any) -> "_Tee":
     Returns:
         A _Tee object with a fileno() method for use with Popen
     """
-    return _Tee(*destinations)
+    return _Tee(*destinations, read_chunk_size=read_chunk_size)
 
 
 class _Tee:
     """Internal class implementing the tee functionality."""
 
-    def __init__(self, *destinations: Any, read_chunk_size: int = _READ_CHUNK_SIZE):
+    def __init__(self, *destinations: Any, read_chunk_size: int | None = None):
+        if read_chunk_size is None:
+            read_chunk_size = _READ_CHUNK_SIZE
         self._read_fd, self._write_fd = os.pipe()
 
         # Set inheritability: write fd should be inherited by child,
