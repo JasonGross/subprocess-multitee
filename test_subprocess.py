@@ -1,7 +1,7 @@
 """
 Tests for subprocess_multitee module.
 
-Run with: pytest test_subprocess_multitee.py -v
+Run with: pytest test_subprocess.py -v
 """
 
 import io
@@ -72,7 +72,9 @@ class TestTeeBasic:
     def test_tee_context_manager(self):
         """tee works as context manager."""
         with tee(PIPE) as t:
-            assert not t._thread.is_alive() or t._write_fd != -1
+            # Threads should be alive and write fd should be open while context is active
+            assert t._reader_thread.is_alive() and t._writer_thread.is_alive()
+            assert t._write_fd != -1
         # After exit, write fd should be closed
         assert t._write_fd == -1
 
@@ -305,30 +307,35 @@ class TestThreadBehavior:
     """Test thread management and cleanup."""
 
     def test_thread_is_daemon(self):
-        """Tee thread is a daemon thread."""
+        """Tee threads are daemon threads."""
         t = tee(PIPE)
-        assert t._thread.daemon
+        assert t._reader_thread.daemon
+        assert t._writer_thread.daemon
         t.close()
 
     def test_thread_has_name(self):
-        """Tee thread has descriptive name."""
+        """Tee threads have descriptive names."""
         t = tee(PIPE)
-        assert "subprocess_multitee" in t._thread.name
+        assert "subprocess_multitee" in t._reader_thread.name
+        assert "subprocess_multitee" in t._writer_thread.name
         t.close()
 
     def test_thread_exits_on_close(self):
-        """Tee thread exits when write fd is closed."""
+        """Tee threads exit when write fd is closed."""
         t = tee(PIPE)
-        assert t._thread.is_alive()
+        assert t._reader_thread.is_alive()
+        assert t._writer_thread.is_alive()
         t.close()
-        assert not t._thread.is_alive()
+        assert not t._reader_thread.is_alive()
+        assert not t._writer_thread.is_alive()
 
     def test_thread_exits_after_subprocess(self):
-        """Tee thread exits after subprocess completes."""
+        """Tee threads exit after subprocess completes."""
         with Popen(["echo", "done"], stdout=tee(PIPE)) as proc:
             proc.stdout.read()
-        # After context exit, thread should be joined
-        assert not proc._stdout_tee._thread.is_alive()
+        # After context exit, threads should be joined
+        assert not proc._stdout_tee._reader_thread.is_alive()
+        assert not proc._stdout_tee._writer_thread.is_alive()
 
 
 class TestEdgeCases:

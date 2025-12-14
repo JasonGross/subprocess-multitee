@@ -2,10 +2,14 @@
 Subprocess utilities for multiplexing stdout/stderr to multiple destinations.
 """
 
+import errno
 import inspect
 import io
 import os
+import queue
+import select
 import subprocess as _subprocess
+import sys
 import threading
 from subprocess import (
     DEVNULL,
@@ -48,6 +52,9 @@ __all__ = [
 ]
 
 
+_READ_CHUNK_SIZE = 65536  # 64KB - matches typical pipe buffer size
+
+
 def tee(*destinations: Any) -> "_Tee":
     """
     Create a tee object that can be passed to subprocess.Popen as stdout/stderr.
@@ -86,7 +93,7 @@ def tee(*destinations: Any) -> "_Tee":
 class _Tee:
     """Internal class implementing the tee functionality."""
 
-    def __init__(self, *destinations: Any):
+    def __init__(self, *destinations: Any, read_chunk_size: int = _READ_CHUNK_SIZE):
         self._read_fd, self._write_fd = os.pipe()
 
         # Set inheritability: write fd should be inherited by child,
@@ -100,6 +107,7 @@ class _Tee:
         self._outputs: List[tuple] = []  # (kind, dest, owned)
         self._owned_fds: List[int] = []
         self.pipes: List[IO[bytes]] = []
+        self._read_chunk_size = read_chunk_size
 
         for dest in destinations:
             if dest == STDOUT:
@@ -131,22 +139,59 @@ class _Tee:
             else:
                 raise TypeError(f"Unsupported destination type: {type(dest)}")
 
-        self._thread = threading.Thread(
-            target=self._loop, daemon=True, name="subprocess_multitee.tee"
+        self._queue: queue.Queue = queue.Queue()
+
+        self._reader_thread = threading.Thread(
+            target=self._reader_loop, daemon=True, name="subprocess_multitee.reader"
         )
-        self._thread.start()
+        self._writer_thread = threading.Thread(
+            target=self._writer_loop, daemon=True, name="subprocess_multitee.writer"
+        )
+        self._reader_thread.start()
+        self._writer_thread.start()
 
     def fileno(self) -> int:
         """Return the file descriptor for use with Popen."""
         return self._write_fd
 
-    def _loop(self) -> None:
-        """Background thread that reads bytes and writes to all destinations."""
-        outputs = self._outputs[:]  # Local copy for modification
+    def _reader_loop(self) -> None:
+        """Read chunks from pipe and enqueue them as soon as available."""
+        try:
+            if sys.platform != "win32":
+                os.set_blocking(self._read_fd, False)
+                while True:
+                    # Wait for data to be available
+                    select.select([self._read_fd], [], [])
+
+                    # Drain all currently available data
+                    while True:
+                        try:
+                            data = os.read(self._read_fd, self._read_chunk_size)
+                            if not data:
+                                return  # EOF
+                            self._queue.put(data)
+                        except OSError as e:
+                            if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                                break  # No more data right now, back to select
+                            raise
+            else:
+                # Windows: select() doesn't work on pipes, use blocking reads
+                while True:
+                    data = os.read(self._read_fd, self._read_chunk_size)
+                    if not data:
+                        return
+                    self._queue.put(data)
+        finally:
+            self._queue.put(None)  # EOF sentinel
+            os.close(self._read_fd)
+
+    def _writer_loop(self) -> None:
+        """Drain queue and write to all destinations."""
+        outputs = self._outputs[:]
         try:
             while True:
-                data = os.read(self._read_fd, 1)
-                if not data:
+                data = self._queue.get()
+                if data is None:
                     break
 
                 dead = []
@@ -158,15 +203,11 @@ class _Tee:
                             dest.write(data)
                             dest.flush()
                     except (OSError, IOError, ValueError):
-                        # Mark failed destinations for removal
                         dead.append(i)
 
-                # Remove dead destinations (iterate in reverse to preserve indices)
                 for i in reversed(dead):
                     outputs.pop(i)
-
         finally:
-            os.close(self._read_fd)
             for fd in self._owned_fds:
                 try:
                     os.close(fd)
@@ -181,7 +222,8 @@ class _Tee:
             except OSError:
                 pass
             self._write_fd = -1
-        self._thread.join()
+        self._reader_thread.join()
+        self._writer_thread.join()
 
     def __enter__(self) -> "_Tee":
         return self
@@ -263,9 +305,11 @@ class Popen(_subprocess.Popen):
         # Join tee threads (they should already be done since subprocess exited
         # and we closed the write fds, so the threads saw EOF)
         if self._stdout_tee:
-            self._stdout_tee._thread.join()
+            self._stdout_tee._reader_thread.join()
+            self._stdout_tee._writer_thread.join()
         if self._stderr_tee:
-            self._stderr_tee._thread.join()
+            self._stderr_tee._reader_thread.join()
+            self._stderr_tee._writer_thread.join()
         return result
 
 
