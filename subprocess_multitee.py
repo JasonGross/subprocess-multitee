@@ -2,9 +2,12 @@
 Subprocess utilities for multiplexing stdout/stderr to multiple destinations.
 """
 
+import errno
 import inspect
 import io
 import os
+import queue
+import select
 import subprocess as _subprocess
 import threading
 from subprocess import (
@@ -46,6 +49,9 @@ __all__ = [
     "TimeoutExpired",
     "CompletedProcess",
 ]
+
+
+_READ_CHUNK_SIZE = 65536  # 64KB - matches typical pipe buffer size
 
 
 def tee(*destinations: Any) -> "_Tee":
@@ -131,22 +137,51 @@ class _Tee:
             else:
                 raise TypeError(f"Unsupported destination type: {type(dest)}")
 
-        self._thread = threading.Thread(
-            target=self._loop, daemon=True, name="subprocess_multitee.tee"
+        self._queue: queue.Queue = queue.Queue()
+
+        self._reader_thread = threading.Thread(
+            target=self._reader_loop, daemon=True, name="subprocess_multitee.reader"
         )
-        self._thread.start()
+        self._writer_thread = threading.Thread(
+            target=self._writer_loop, daemon=True, name="subprocess_multitee.writer"
+        )
+        self._reader_thread.start()
+        self._writer_thread.start()
 
     def fileno(self) -> int:
         """Return the file descriptor for use with Popen."""
         return self._write_fd
 
-    def _loop(self) -> None:
-        """Background thread that reads bytes and writes to all destinations."""
-        outputs = self._outputs[:]  # Local copy for modification
+    def _reader_loop(self) -> None:
+        """Read chunks from pipe and enqueue them as soon as available."""
+        os.set_blocking(self._read_fd, False)
         try:
             while True:
-                data = os.read(self._read_fd, 1)
-                if not data:
+                # Wait for data to be available
+                select.select([self._read_fd], [], [])
+
+                # Drain all currently available data
+                while True:
+                    try:
+                        data = os.read(self._read_fd, _READ_CHUNK_SIZE)
+                        if not data:
+                            return  # EOF
+                        self._queue.put(data)
+                    except OSError as e:
+                        if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                            break  # No more data right now, back to select
+                        raise
+        finally:
+            self._queue.put(None)  # EOF sentinel
+            os.close(self._read_fd)
+
+    def _writer_loop(self) -> None:
+        """Drain queue and write to all destinations."""
+        outputs = self._outputs[:]
+        try:
+            while True:
+                data = self._queue.get()
+                if data is None:
                     break
 
                 dead = []
@@ -158,15 +193,11 @@ class _Tee:
                             dest.write(data)
                             dest.flush()
                     except (OSError, IOError, ValueError):
-                        # Mark failed destinations for removal
                         dead.append(i)
 
-                # Remove dead destinations (iterate in reverse to preserve indices)
                 for i in reversed(dead):
                     outputs.pop(i)
-
         finally:
-            os.close(self._read_fd)
             for fd in self._owned_fds:
                 try:
                     os.close(fd)
@@ -181,7 +212,8 @@ class _Tee:
             except OSError:
                 pass
             self._write_fd = -1
-        self._thread.join()
+        self._reader_thread.join()
+        self._writer_thread.join()
 
     def __enter__(self) -> "_Tee":
         return self
@@ -263,9 +295,11 @@ class Popen(_subprocess.Popen):
         # Join tee threads (they should already be done since subprocess exited
         # and we closed the write fds, so the threads saw EOF)
         if self._stdout_tee:
-            self._stdout_tee._thread.join()
+            self._stdout_tee._reader_thread.join()
+            self._stdout_tee._writer_thread.join()
         if self._stderr_tee:
-            self._stderr_tee._thread.join()
+            self._stderr_tee._reader_thread.join()
+            self._stderr_tee._writer_thread.join()
         return result
 
 
