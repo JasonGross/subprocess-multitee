@@ -21,6 +21,14 @@ from subprocess import (
 )
 from typing import IO, Any, List
 
+# use presence of msvcrt to detect Windows-like platforms (see bpo-8110)
+try:
+    import msvcrt
+except ModuleNotFoundError:
+    _mswindows = False
+else:
+    _mswindows = True
+
 __all__ = [
     "tee",
     "Popen",
