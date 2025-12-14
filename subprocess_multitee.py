@@ -23,7 +23,7 @@ from subprocess import (
     getoutput,
     getstatusoutput,
 )
-from typing import IO, Any, List
+from typing import IO, Any, List, Optional
 
 # use presence of msvcrt to detect Windows-like platforms (see bpo-8110)
 try:
@@ -55,7 +55,7 @@ __all__ = [
 _READ_CHUNK_SIZE = 65536  # 64KB - matches typical pipe buffer size
 
 
-def tee(*destinations: Any, read_chunk_size: int | None = None) -> "_Tee":
+def tee(*destinations: Any, read_chunk_size: Optional[int] = None) -> "_Tee":
     """
     Create a tee object that can be passed to subprocess.Popen as stdout/stderr.
 
@@ -93,7 +93,7 @@ def tee(*destinations: Any, read_chunk_size: int | None = None) -> "_Tee":
 class _Tee:
     """Internal class implementing the tee functionality."""
 
-    def __init__(self, *destinations: Any, read_chunk_size: int | None = None):
+    def __init__(self, *destinations: Any, read_chunk_size: Optional[int] = None):
         if read_chunk_size is None:
             read_chunk_size = _READ_CHUNK_SIZE
         self._read_fd, self._write_fd = os.pipe()
