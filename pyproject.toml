@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "subprocess-multitee"
-version = "0.2.1"
+version = "0.2.2"
 authors = [{ name = "Jason Gross", email = "jgross@mit.edu" }]
 description = "A small `tee` function for splitting stdout/stderr in subprocess, and a `subprocess.Popen` convenience wrapper"
 readme = "README.md"
